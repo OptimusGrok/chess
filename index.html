@@ -29,7 +29,7 @@ main{display:flex;gap:18px;align-items:flex-start;justify-content:center;flex-wr
 .captured{display:flex;align-items:center;min-width:0;overflow:hidden;white-space:nowrap;color:var(--muted)}
 .captured .adv{font:600 13px system-ui,sans-serif;margin-left:6px;color:var(--accent)}
 .captured .lbl{font:600 12px system-ui,sans-serif;color:var(--muted);margin-right:8px;min-width:54px}
-.captured svg.pc.mini{width:20px;height:20px;margin-right:-6px;flex:none}
+.captured svg.pc.mini{width:26px;height:26px;margin-right:-10px;flex:none}
 .captured svg.pc.mini:last-of-type{margin-right:0}
 .clk{font:700 17px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;padding:6px 9px;border-radius:7px;background:#1a1e2a;color:var(--muted);min-width:64px;text-align:center;flex:none}
 .clk.on{color:#fff;background:#3a4259} .clk.low{color:#fff;background:#a23232}
@@ -48,8 +48,10 @@ main{display:flex;gap:18px;align-items:flex-start;justify-content:center;flex-wr
 .sq.dot::after{content:"";position:absolute;width:30%;height:30%;border-radius:50%;background:rgba(20,30,20,.32);pointer-events:none;z-index:3}
 .sq.ring::after{content:"";position:absolute;inset:4%;border-radius:50%;border:calc(var(--sz)/110) solid rgba(20,30,20,.35);pointer-events:none;z-index:3}
 .sq.hover{box-shadow:inset 0 0 0 calc(var(--sz)/150) rgba(255,255,255,.75)}
-svg.pc,.ghost svg{display:block;position:relative;z-index:2;width:calc(var(--sz)/8*.9);height:calc(var(--sz)/8*.9);pointer-events:none;
-  shape-rendering:crispEdges;filter:drop-shadow(0 1px 1px rgba(0,0,0,.35))}
+svg.pc,.ghost svg{display:block;position:relative;z-index:2;width:calc(var(--sz)/8*.96);height:calc(var(--sz)/8*.96);pointer-events:none;
+  filter:drop-shadow(0 1px 1px rgba(0,0,0,.4))}
+svg.pc.b,.ghost svg.b{filter:drop-shadow(.7px 0 0 #f2e8cf) drop-shadow(-.7px 0 0 #f2e8cf) drop-shadow(0 .7px 0 #f2e8cf) drop-shadow(0 -.7px 0 #f2e8cf) drop-shadow(0 1px 1px rgba(0,0,0,.45))}
+svg.pc.mini{filter:none} svg.pc.mini.b{filter:drop-shadow(.6px 0 0 #f2e8cf) drop-shadow(-.6px 0 0 #f2e8cf) drop-shadow(0 .6px 0 #f2e8cf) drop-shadow(0 -.6px 0 #f2e8cf)}
 svg.pc.lift{opacity:.25}
 .ghost{position:fixed;z-index:50;transform:translate(-50%,-55%) scale(1.15);filter:drop-shadow(0 8px 8px rgba(0,0,0,.45));pointer-events:none}
 .cap-ghost{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:1;pointer-events:none}
@@ -848,46 +850,73 @@ var searchId = 0, thinking = false, thinkKind = '', reqCb = null, reqStarted = 0
 var sqEls = {}, sqLabel = {};
 var prefs = { sound: true };
 
-/* ---------- pixel piece set (16x16 masks, outline generated) ---------- */
-var HALF = {
-  1: ['........','........','......##','.....###','.....###','......##','.......#','......##','.....###','......##','.....###','....####','...#####','..######','..######','........'],
-  3: ['.......#','......##','.....###','.....##o','....###o','....####','.....###','......##','.......#','......##','.....###','......##','.....###','....####','...#####','..######'],
-  4: ['........','..###.##','..###.##','..######','...#####','....####','....####','....####','....####','....####','....####','...#####','..######','..######','..######','........'],
-  5: ['.#.....#','.#..#..#','.##.##.#','.#######','..######','...#####','...#####','....####','....####','...#####','...#####','..######','..######','.#######','.#######','........']
+/* ---------- medieval piece set: inline SVG characters, one <symbol> per piece/colour, referenced with <use> ---------- */
+var PAL = {
+  w: { body:'#f7f0dd', shade:'#d9cba4', trim:'#dfa81e', trim2:'#9c7210', metal:'#f0c231', jewel:'#2a6bc4', line:'#3a2a12', det:'#9a7b44', skin:'#f4d4b0', hair:'#bdb7a8', steel:'#e4e8ee' },
+  b: { body:'#3d424c', shade:'#262a31', trim:'#c42335', trim2:'#7d111d', metal:'#b9bfc9', jewel:'#f0c231', line:'#08080a', det:'#9aa3b2', skin:'#d9b08c', hair:'#6b645c', steel:'#8e97a6' }
 };
-var SPR = {
-  2: ['........##......', '.......####.....', '......######....', '.....########...', '....##o#######..', '...###########..', '..############..', '.#####.#######..',
-      '.####...######..', '.###.....######.', '.##......######.', '.........######.', '........#######.', '.......########.', '....############', '...#############'],
-  6: ['.......##.......', '......####......', '.......##.......', '...####..####...', '..#####..#####..', '..############..', '...##########...', '....########....',
-      '.....######.....', '....########....', '...##########...', '..############..', '..############..', '..############..', '................', '................']
-};
-for (var ht in HALF) SPR[ht] = HALF[ht].map(function (r) { return r + r.split('').reverse().join(''); });
-var PALETTE = {
-  w: { fill: '#fbf6e9', shade: '#d3c9ad', line: '#2a2018', det: '#2a2018' },
-  b: { fill: '#46403b', shade: '#6e665f', line: '#0c0a09', det: '#d8d0c2' }
-};
-var pieceCache = {};
+function build(t, k) {
+  var c = PAL[k];
+  var S = 'stroke="' + c.line + '" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"';
+  var P = function (d, f, x) { return '<path d="' + d + '" fill="' + f + '" ' + S + (x || '') + '/>'; };
+  var L = function (d, col, w) { return '<path d="' + d + '" fill="none" stroke="' + col + '" stroke-width="' + (w || 1) + '" stroke-linecap="round" stroke-linejoin="round"/>'; };
+  var Ci = function (x, y, r, f, st) { return '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + f + '"' + (st ? ' ' + S : '') + '/>'; };
+  var eyes = function (y, dx) { return Ci(22.5 - dx, y, .85, c.line) + Ci(22.5 + dx, y, .85, c.line); };
+  var plinth = P('M10.5 37h24v3a2 2 0 0 1-2 2h-20a2 2 0 0 1-2-2z', c.shade) + L('M12.5 39.4h20', c.trim, 1.1);
+  switch (t) {
+    case 1: // peasant footsoldier with spear and hood
+      return P('M32.6 8.5V38', c.steel).replace('fill="' + c.steel + '"', 'fill="none"').replace('stroke-width="1.3"', 'stroke-width="2"') + P('M32.6 1.8l2.8 6.4h-5.6z', c.steel) +
+        P('M14.5 37l2.6-13.5q5.4-3 10.8 0L30.5 37z', c.body) + P('M17 29.3h11v2.4H17z', c.trim) + L('M22.5 24v5', c.det, 1) +
+        Ci(22.5, 16.8, 5.2, c.skin, 1) + P('M16.9 17.2q-.6-8.2 5.6-8.2 6.200 0 5.600 8.200-2.800-3.800-5.600-3.800t-5.600 3.800z', c.trim) + eyes(18.2, 2) + plinth;
+    case 4: // castle tower
+      return P('M13.2 37L14.6 17h15.800L31.8 37z', c.body) +
+        P('M12 17V8.800h4.600v3.600h3.900V8.800h4.600v3.600h3.900V8.800H33V17z', c.body) +
+        L('M14.200 23.500h16.600M13.800 30h17.400', c.det, .9) + L('M19.200 17v6.500M25.800 17v6.500M16.500 23.500v6.500M22.500 23.500v6.500M28.500 23.500v6.500', c.det, .9) +
+        P('M19.300 37v-8.200q3.200-4.600 6.400 0V37z', c.trim2) + P('M21.600 18.800h1.800v3.300h-1.800z', c.line, ' stroke-width=".5"') +
+        L('M22.500 8.800V2.200', c.line, 1.6) + P('M22.500 2.200l7 2.200-7 2.400z', c.trim) + plinth;
+    case 3: // mitred cleric with crozier
+      return L('M33.500 38V13', c.trim2, 2.200) + L('M33.500 13.500c0-5.500 5.500-5.500 5.500-1.500', c.trim2, 2.200) +
+        P('M13 37q.8-7.500 4.800-12.500 4.700-2.500 9.400 0Q31.200 29.500 32 37z', c.body) + P('M20.800 24.200h3.400l1 12.800h-5.400z', c.trim) +
+        Ci(22.500, 18.200, 4.500, c.skin, 1) + eyes(19.200, 1.900) +
+        P('M17.200 16.500C17.500 11 20 7 22.500 3.200 25 7 27.500 11 27.800 16.500z', c.body) + P('M17 14.200h11v2.600H17z', c.trim) + L('M22.500 6.500v5.200M20.200 8.800h4.600', c.trim2, 1.300) + plinth;
+    case 2: // armoured warhorse head (knight)
+      return P('M13 38c.5-3.500 4.500-5.500 6.500-8.500-3 1.500-7.500 1.500-9.700-.5-1.800-1.800-.8-3.800 1.200-5.800 3-3 4-6.500 7.500-11.500l1-5.500 4 4.500c6-1 11 5 12 13 .8 6.500 0 11.200-1 14.300z', c.body) +
+        P('M11 23.500C14 19.500 15 15.500 19 10.500l3.200 3.200c-2 4-4.500 8.500-7.500 11.800z', c.steel) + L('M14 20.500l4 2', c.line, .9) +
+        P('M22.500 5.500l1.300 4.500 3.500-1.500c2.500 1 4.500 3.500 5.500 6.500-4-.5-7-3-10-3z', c.trim) +
+        L('M26.500 12c3.500 3 5.500 8 5.800 14M28.500 17c2 3 2.800 8 2.500 13', c.trim2, 1.800) +
+        Ci(19.500, 17, 1.250, c.line) + L('M10.500 28.200q1.500 1 3.200.5', c.det, 1) +
+        P('M19.500 30c3 2.500 8 3.200 14.500 1.500l-.5 6.500H15.500c1-2.500 3-4.500 4-8z', c.trim) + L('M21 34.500h11', c.trim2, 1) + plinth;
+    case 6: // crowned king
+      return P('M9.500 38C9.500 31 14 26.500 22.500 26.500S35.500 31 35.500 38z', c.body) +
+        P('M13 29.500q9.500 5.500 19 0l1.200 3.700q-10.700 6-21.400 0z', c.trim) + Ci(22.500, 34.800, 1.100, c.jewel) +
+        P('M17.500 21q.2 7 5 8.600 4.800-1.600 5-8.600-2.500 3-5 3t-5-3z', c.hair) +
+        Ci(22.500, 19.600, 5.300, c.skin, 1) + eyes(19.300, 2.100) +
+        P('M17.800 21q.2 6.800 4.700 8.200 4.500-1.400 4.700-8.200-2.400 3.200-4.700 3.200t-4.700-3.200z', c.hair) +
+        P('M16.500 15.200l-.8-8 3.900 3.800 2.900-5.600 2.900 5.600 3.900-3.800-.8 8z', c.metal) + Ci(22.500, 12.500, 1.200, c.jewel) +
+        L('M22.500 .9v4.400M20.200 2.800h4.600', c.metal, 2) + plinth;
+    case 5: // queen with crown and veil
+      return P('M14.800 28.500C12 21 14.500 12.800 22.500 12c8 .8 10.500 9 7.700 16.500-1.800-3.400-4-5-7.700-5s-5.900 1.600-7.700 5z', c.trim) +
+        P('M12 38q.5-6.500 4.200-10 3.200-2 6.300-2t6.300 2q3.700 3.500 4.200 10z', c.body) + L('M19.500 27l3 9 3-9', c.det, 1) +
+        Ci(22.500, 19, 4.600, c.skin, 1) + eyes(19.800, 1.900) + L('M21 22.400q1.500.9 3 0', c.trim2, .9) +
+        P('M17.500 14.500l-.5-6.800 2.800 2.600 2.700-4.600 2.700 4.600 2.800-2.600-.5 6.800z', c.metal) +
+        Ci(17, 6.800, 1.300, c.jewel, 1) + Ci(22.500, 4.400, 1.500, c.jewel, 1) + Ci(28, 6.800, 1.300, c.jewel, 1) +
+        L('M18 27.800q4.500 3.200 9 0', c.metal, 1.600) + plinth;
+  }
+}
+
+var pieceCache = {}, spriteReady = false;
+function ensureSprite() {
+  if (spriteReady) return; spriteReady = true;
+  var h = '<svg width="0" height="0" style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true" focusable="false"><defs>';
+  ['w', 'b'].forEach(function (k) { for (var t = 1; t <= 6; t++) h += '<symbol id="pc-' + k + t + '" viewBox="0 0 45 45">' + build(t, k) + '</symbol>'; });
+  var d = document.createElement('div'); d.innerHTML = h + '</defs></svg>'; document.body.insertBefore(d.firstChild, document.body.firstChild);
+}
 function pieceSvg(pc, cls) {
   var key = pc + (cls || '');
   if (pieceCache[key]) return pieceCache[key];
-  var t = pc & 7, white = !(pc & 8), pal = white ? PALETTE.w : PALETTE.b, m = SPR[t], N = 16, rects = {};
-  function at(x, y) { return x >= 0 && y >= 0 && x < N && y < N ? m[y][x] : '.'; }
-  function put(col, x, y) { (rects[col] = rects[col] || []).push([x, y]); }
-  for (var y = -1; y <= N; y++) for (var x = -1; x <= N; x++) {
-    var c = at(x, y);
-    if (c === '#') {
-      var edgeR = at(x + 1, y) === '.' || at(x, y + 1) === '.', edgeL = at(x - 1, y) === '.' || at(x, y - 1) === '.';
-      put(white ? (edgeR ? pal.shade : pal.fill) : (edgeL ? pal.shade : pal.fill), x, y);
-    } else if (c === 'o') put(pal.det, x, y);
-    else if ([[1, 0], [-1, 0], [0, 1], [0, -1]].some(function (d) { return at(x + d[0], y + d[1]) !== '.'; })) put(pal.line, x, y);
-  }
-  var out = '<svg class="pc ' + (white ? 'w' : 'b') + (cls ? ' ' + cls : '') + '" viewBox="0 0 18 18" aria-hidden="true">';
-  for (var col in rects) {
-    var d = '';
-    rects[col].forEach(function (p) { d += 'M' + (p[0] + 1) + ' ' + (p[1] + 1) + 'h1v1h-1z'; });
-    out += '<path fill="' + col + '" d="' + d + '"/>';
-  }
-  return (pieceCache[key] = out + '</svg>');
+  ensureSprite();
+  var k = pc & 8 ? 'b' : 'w';
+  return (pieceCache[key] = '<svg class="pc ' + k + (cls ? ' ' + cls : '') + '" viewBox="0 0 45 45" aria-hidden="true"><use href="#pc-' + k + (pc & 7) + '"/></svg>');
 }
 
 /* ---------- sound (WebAudio, generated; unlocked on first user gesture) ---------- */
