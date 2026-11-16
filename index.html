@@ -140,7 +140,15 @@ button.btn.sm{min-width:44px;min-height:44px;padding:4px 0;font-size:20px;line-h
 .bsprite svg.pc{width:96%;height:96%;filter:drop-shadow(0 3px 3px rgba(0,0,0,.45))}
 .bsprite svg.pc.b{filter:drop-shadow(.7px 0 0 #f2e8cf) drop-shadow(-.7px 0 0 #f2e8cf) drop-shadow(0 .7px 0 #f2e8cf) drop-shadow(0 -.7px 0 #f2e8cf) drop-shadow(0 3px 3px rgba(0,0,0,.45))}
 .bsprite.hurt svg.pc{filter:brightness(2.2) sepia(1) hue-rotate(-40deg) saturate(4) drop-shadow(0 0 4px #f33)}
-svg.pc.bhide{opacity:0}</style>
+svg.pc.bhide{opacity:0}
+
+/* robot hand overlay */
+.rfx{position:fixed;left:0;top:0;width:100vw;height:100vh;pointer-events:none;z-index:35;overflow:hidden;contain:strict}
+.rfx canvas{position:absolute;left:0;top:0;width:100%;height:100%}
+.rsprite{position:absolute;left:0;top:0;display:flex;align-items:center;justify-content:center;will-change:transform,opacity;pointer-events:none}
+.rsprite svg.pc{width:96%;height:96%;filter:drop-shadow(0 4px 5px rgba(0,0,0,.5))}
+.rsprite svg.pc.b{filter:drop-shadow(.7px 0 0 #f2e8cf) drop-shadow(-.7px 0 0 #f2e8cf) drop-shadow(0 .7px 0 #f2e8cf) drop-shadow(0 -.7px 0 #f2e8cf) drop-shadow(0 4px 5px rgba(0,0,0,.5))}
+svg.pc.rhold{opacity:0}</style>
 </head>
 <body>
 <div class="app">
@@ -165,6 +173,7 @@ svg.pc.bhide{opacity:0}</style>
           <label class="field">You play<select id="color"><option value="w">White</option><option value="b">Black</option></select></label>
           <label class="field">Level<select id="level"><option value="easy">Easy</option><option value="medium" selected>Medium</option><option value="hard">Hard</option></select></label>
           <label class="field">Battle animations<select id="battles"><option value="on">On</option><option value="off">Off</option></select></label>
+          <label class="field">Robot hand<select id="robot"><option value="on">On</option><option value="off">Off</option></select></label>
           <label class="field">Clock<select id="clock"><option value="0">None</option><option value="5">5 min</option><option value="10">10 min</option></select></label>
         </div>
       </details>
@@ -857,7 +866,7 @@ var viewPly = -1, viewPos = null;                                // -1 = live po
 var selected = -1, drag = null, promoPending = null, promoAt = 0, hintMove = 0, lastOfferPly = -99;
 var searchId = 0, thinking = false, thinkKind = '', reqCb = null, reqStarted = 0, worker = null, workerOk = true;
 var sqEls = {}, sqLabel = {};
-var prefs = { sound: true, battle: !reduceMotion };
+var prefs = { sound: true, battle: !reduceMotion, robot: true };
 
 /* ---------- medieval piece set: inline SVG characters, one <symbol> per piece/colour, referenced with <use> ---------- */
 var PAL = {
@@ -1064,7 +1073,7 @@ function requestAI() {
 /* ---------- clock ---------- */
 function clockOn() { return cfg.clock > 0; }
 function resetClock() { var ms = cfg.clock * 60000; rem = { w: ms, b: ms }; clocks = [{ w: ms, b: ms }]; tickAt = Date.now(); }
-function clockRunning() { return clockOn() && !over && !!pos; }
+function clockRunning() { return clockOn() && !over && !!pos && !(robot && !robot.committed); }
 function settleClock() {
   var n = Date.now();
   if (clockRunning()) rem[sideKey(pos.turn)] -= n - tickAt;
@@ -1114,7 +1123,7 @@ function writeSelects() {
   $('color').disabled = cfg.mode !== 'hvc'; $('level').disabled = cfg.mode !== 'hvc';
 }
 function newGame() {
-  endBattle();
+  endBattle(); endRobot(false);
   cancelAI(); closePromo();
   readSelects(); writeSelects();
   pos = new E.Position(E.START);
@@ -1150,21 +1159,35 @@ function play(m, opt) {
   var capSq = (flags & E.F_EP) ? to + (us === E.WHITE ? -16 : 16) : to, capPc = pos.board[capSq];
   var atkPc = pos.board[from];
   var castle = (flags & E.F_CASTLE) ? [to > from ? from + 3 : from - 4, to > from ? from + 1 : from - 1] : null;
+  var isComp = cfg.mode === 'hvc' && us !== cfg.human;
+  var useRobot = prefs.robot && !reduceMotion && !opt.noSlide && (opt.forceRobot || (isComp && !opt.noRobot));
+  if (useRobot) {
+    startRobot({ m: m, from: from, to: to, flags: flags, us: us, capSq: capSq, capPc: capPc, atkPc: atkPc, castle: castle,
+      landPc: E.mPromo(m) ? (E.mPromo(m) | us) : atkPc, noBattle: !!opt.noBattle });
+    return;
+  }
+  finishPlay(m, from, to, capSq, capPc, atkPc, castle, us, !opt.noSlide, !!opt.noBattle, false);
+}
+function finishPlay(m, from, to, capSq, capPc, atkPc, castle, us, slide, noBattle, delivered) {
   endBattle();
   redo = []; selected = -1; viewPly = -1; viewPos = null;
-  var doBattle = !!capPc && prefs.battle && !opt.noBattle;
+  var doBattle = !!capPc && prefs.battle && !noBattle;
   if (doBattle) battle = { pending: true, to: to };
   applyMove(m);
   tickAt = Date.now();
   afterChange();
-  if (doBattle) startBattle(atkPc, capPc, from, to, capSq, pos.board[to]);
-  else animateMove(from, to, capSq, capPc, castle, !opt.noSlide);
+  if (doBattle) startBattle(atkPc, capPc, from, to, capSq, pos.board[to], delivered);
+  else animateMove(from, to, capSq, capPc, castle, slide && !delivered);
   if (doBattle) battleSfx(atkPc & 7);
   if (over === 'checkmate') sfx(cfg.mode === 'hvc' && us !== cfg.human ? 'lose' : 'win');
   else if (over) sfx('draw');
   else if (pos.inCheck()) sfx('check');
   else if (castle) sfx('castle');
   else if (!doBattle) sfx(capPc ? 'capture' : 'move');
+  if (delivered && castle && slide) {
+    var rookEl = sqEls[castle[1]] && sqEls[castle[1]].querySelector('.pc');
+    slideEl(rookEl, castle[0], castle[1]);
+  }
 }
 function unmakeOne() {
   var m = pos.sMove[pos.ply - 1];
@@ -1178,7 +1201,7 @@ function undoable() {
   return true;
 }
 function undo() {
-  endBattle();
+  endBattle(); endRobot(false);
   if (!undoable()) return;
   cancelAI(); closePromo(); viewPly = -1; viewPos = null;
   if (ended && (ended.type === 'resign' || ended.type === 'agreed')) { ended = null; tickAt = Date.now(); afterChange(); return; }
@@ -1190,7 +1213,7 @@ function undo() {
   afterChange();
 }
 function redoMove() {
-  endBattle();
+  endBattle(); endRobot(false);
   if (!redo.length || over) return;
   cancelAI(); closePromo(); viewPly = -1; viewPos = null;
   do {
@@ -1204,7 +1227,7 @@ function redoMove() {
   afterChange();
 }
 function humanCanMove() {
-  if (over || promoPending || viewPly >= 0 || dlgOpen()) return false;
+  if (over || promoPending || viewPly >= 0 || dlgOpen() || robot) return false;
   if (cfg.mode === 'hvc') return pos.turn === cfg.human && !thinking;
   return !thinking;
 }
@@ -1219,6 +1242,7 @@ function tryMove(from, to, viaDrag) {
 
 /* ---------- review (tap a move in the list) ---------- */
 function setView(k) {
+  if (robot) skipRobot();
   endBattle();
   cancelHintOnly();
   if (k < 0 || k >= pos.ply) { viewPly = -1; viewPos = null; }
@@ -1259,7 +1283,7 @@ $('promo').addEventListener('click', function (e) {
 
 /* ---------- rendering ---------- */
 function buildBoard() {
-  endBattle();
+  endBattle(); if (robot && robot.committed) endRobot(false);
   boardEl.innerHTML = ''; sqEls = {}; sqLabel = {};
   for (var row = 0; row < 8; row++) for (var col = 0; col < 8; col++) {
     var rank = flipped ? row : 7 - row, file = flipped ? 7 - col : col, sq = rank * 16 + file;
@@ -1298,6 +1322,8 @@ function render() {
       (sq === checkSq ? ', in check' : '') + (live && sq === selected ? ', selected' : '') + (tgt ? ', legal move' : '') + (live && sq === ht ? ', hint' : '');
     if (sqLabel[sq] !== label) { el.setAttribute('aria-label', label); sqLabel[sq] = label; }
     if (battle && battle.to === sq && el.querySelector('.pc')) el.querySelector('.pc').classList.add('bhide');
+    if (robot && robot.holding && !robot.committed && robot.from === sq && el.querySelector('.pc')) el.querySelector('.pc').classList.add('rhold');
+    if (robot && robot.holding && robot.committed && robot.to === sq && el.querySelector('.pc')) el.querySelector('.pc').classList.add('rhold');
     if (drag && drag.ghost && drag.from === sq && el.querySelector('.pc')) el.querySelector('.pc').classList.add('lift');
   }
   renderStatus(); renderMoves(); renderCaptured(rp); renderOverlay(); renderButtons(); renderClocks();
@@ -1329,6 +1355,8 @@ function renderStatus() {
   if (over) {
     var r = resultInfo(); cls += ' over';
     html = '<span class="badge">' + r.badge + '</span> ' + r.title + (r.text ? ' \u2014 ' + r.text : '');
+  } else if (robot && !robot.committed) {
+    html = '<span class="spinner"></span> Computer is moving\u2026';
   } else if (thinking) {
     var msg = thinkKind === 'hint' ? 'Looking for a good move\u2026' : thinkKind === 'judge' ? 'Computer is considering your draw offer\u2026' : 'Computer (' + sideName(pos.turn) + ') is thinking\u2026';
     html = '<span class="spinner"></span> ' + msg;
@@ -1346,7 +1374,7 @@ function renderStatus() {
   if (statusEl._h !== html) { statusEl.innerHTML = html; statusEl._h = html; }
 }
 function renderOverlay() {
-  var show = over && !overDismissed && !battle;
+  var show = over && !overDismissed && !battle && !robot;
   $('overlay').classList.toggle('hidden', !show);
   if (show) {
     var r = resultInfo();
@@ -1393,7 +1421,7 @@ function renderCaptured(rp) {
   if ($('capTop')._h !== ht) { $('capTop').innerHTML = ht; $('capTop')._h = ht; }
 }
 function renderButtons() {
-  var idle = !thinking, myTurn = !over && viewPly < 0 && (cfg.mode === 'hvh' || pos.turn === cfg.human);
+  var idle = !thinking && !robot, myTurn = !over && viewPly < 0 && (cfg.mode === 'hvh' || pos.turn === cfg.human);
   $('undoBtn').disabled = !undoable();
   $('redoBtn').disabled = !redo.length || !!over;
   $('hintBtn').disabled = !myTurn || !idle || !!promoPending;
@@ -1443,9 +1471,10 @@ function sqCenter(sq) {
 function bSprite(pc, layer) {
   var d = document.createElement('div'); d.className = 'bsprite'; d.innerHTML = pieceSvg(pc); layer.appendChild(d); return d;
 }
-function startBattle(atk, def, from, to, capSq, landPc) {
+function startBattle(atk, def, from, to, capSq, landPc, delivered) {
   if (!sqEls[from] || !sqEls[capSq] || !sqEls[to]) { battle = null; return; }
   var A = sqCenter(from), D = sqCenter(capSq), T = sqCenter(to), s = A.s;
+  if (delivered) A = { x: T.x, y: T.y, s: T.s };
   var layer = document.createElement('div'); layer.className = 'bfx'; layer.setAttribute('aria-hidden', 'true');
   var cv = document.createElement('canvas'), dpr = Math.min(2, window.devicePixelRatio || 1);
   cv.width = Math.round(innerWidth * dpr); cv.height = Math.round(innerHeight * dpr);
@@ -1678,7 +1707,592 @@ function battleSfx(kind) {
     default: tone(2637, 0.18, 'sine', 0.1, 0.2); tone(3136, 0.15, 'sine', 0.08, 0.26); thud(0.3, 1.6, 220, h); tone(60, 0.35, 'sine', 0.5, h, 35); break;
   }
 }
-window.addEventListener('resize', function () { if (battle && !battle.pending) endBattle(); });
+window.addEventListener('resize', function () { if (battle && !battle.pending) endBattle(); if (robot) skipRobot(); });
+
+/* ---------- robot hand: detailed metallic arm for computer moves ---------- */
+var robot = null, robotFreeze = null, Rparts = null;
+var R_DUR = 2000, R_PLACE = 1720;
+function easeInOut(k) { k = clamp01(k); return k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2; }
+function rMake(w, h) {
+  var dpr = Math.min(2.5, window.devicePixelRatio || 1), c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(w * dpr)); c.height = Math.max(1, Math.round(h * dpr));
+  var x = c.getContext('2d'); x.scale(dpr, dpr);
+  return { c: c, x: x, w: w, h: h };
+}
+function rBlit(ctx, p, x, y, rot, sx, sy) {
+  if (!p) return;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot || 0); ctx.scale(sx == null ? 1 : sx, sy == null ? 1 : sy);
+  ctx.drawImage(p.c, -p.w / 2, -p.h / 2, p.w, p.h); ctx.restore();
+}
+function rRivet(x, cx, cy, r) {
+  var g = x.createRadialGradient(cx - r * 0.32, cy - r * 0.38, r * 0.08, cx, cy, r);
+  g.addColorStop(0, '#f4f7fb'); g.addColorStop(0.28, '#c5ced8'); g.addColorStop(0.7, '#5c6572'); g.addColorStop(1, '#1e242c');
+  x.fillStyle = g; x.beginPath(); x.arc(cx, cy, r, 0, 7); x.fill();
+  x.strokeStyle = 'rgba(8,10,14,.55)'; x.lineWidth = Math.max(0.4, r * 0.1); x.stroke();
+  x.fillStyle = 'rgba(255,255,255,.75)'; x.beginPath(); x.arc(cx - r * 0.28, cy - r * 0.32, r * 0.2, 0, 7); x.fill();
+  x.fillStyle = 'rgba(0,0,0,.28)'; x.beginPath(); x.arc(cx + r * 0.12, cy + r * 0.14, r * 0.22, 0, 7); x.fill();
+}
+function rScrew(x, cx, cy, r) {
+  rRivet(x, cx, cy, r);
+  x.strokeStyle = 'rgba(16,18,22,.8)'; x.lineWidth = Math.max(0.7, r * 0.22); x.lineCap = 'round';
+  x.beginPath(); x.moveTo(cx - r * 0.42, cy - r * 0.42); x.lineTo(cx + r * 0.42, cy + r * 0.42);
+  x.moveTo(cx + r * 0.42, cy - r * 0.42); x.lineTo(cx - r * 0.42, cy + r * 0.42); x.stroke();
+}
+function rGroove(x, x0, y0, x1, y1, w) {
+  x.strokeStyle = 'rgba(10,12,16,.55)'; x.lineWidth = w; x.lineCap = 'round';
+  x.beginPath(); x.moveTo(x0, y0); x.lineTo(x1, y1); x.stroke();
+  x.strokeStyle = 'rgba(255,255,255,.28)'; x.lineWidth = Math.max(0.5, w * 0.45);
+  x.beginPath(); x.moveTo(x0, y0 - w * 0.55); x.lineTo(x1, y1 - w * 0.55); x.stroke();
+}
+function rMetalFill(x, x0, y0, x1, y1, pal) {
+  pal = pal || {};
+  var g = x.createLinearGradient(x0, y0, x1, y1);
+  g.addColorStop(0, pal.lo || '#3a424c'); g.addColorStop(0.16, pal.mid || '#8e99a8');
+  g.addColorStop(0.36, pal.hi || '#e8eef6'); g.addColorStop(0.52, pal.mid2 || '#a8b2c0');
+  g.addColorStop(0.78, pal.mid || '#7b8593'); g.addColorStop(1, pal.lo2 || '#2a313a');
+  return g;
+}
+function rBodyPath(x, x0, y0, x1, y1, r0, r1) {
+  var midY = (y0 + y1) / 2, t0 = (y1 - y0) / 2, t1 = t0;
+  // tapered capsule from (x0, mid) radius r0 to (x1, mid) radius r1
+  x.beginPath();
+  x.moveTo(x0, midY - r0);
+  x.lineTo(x1, midY - r1);
+  x.arc(x1, midY, r1, -Math.PI / 2, Math.PI / 2, false);
+  x.lineTo(x0, midY + r0);
+  x.arc(x0, midY, r0, Math.PI / 2, -Math.PI / 2, false);
+  x.closePath();
+}
+function rBuildParts() {
+  var dpr = Math.min(2.5, window.devicePixelRatio || 1);
+  if (Rparts && Rparts.dpr === dpr) return Rparts;
+  var P = { dpr: dpr };
+
+  /* forearm body, horizontal, elbow at left, wrist at right */
+  var fa = rMake(420, 132), x = fa.x, W = 420, H = 132, cy = H / 2, xE = 28, xW = 396, rE = 46, rW = 36;
+  x.save();
+  rBodyPath(x, xE, 0, xW, H, rE, rW);
+  x.fillStyle = rMetalFill(x, 0, cy - rE, 0, cy + rE);
+  x.fill();
+  x.strokeStyle = 'rgba(10,12,16,.7)'; x.lineWidth = 1.6; x.stroke();
+  x.clip();
+  /* specular streak */
+  var sg = x.createLinearGradient(0, cy - rE, 0, cy + rE);
+  sg.addColorStop(0, 'rgba(255,255,255,0)'); sg.addColorStop(0.28, 'rgba(255,255,255,.55)');
+  sg.addColorStop(0.38, 'rgba(255,255,255,.12)'); sg.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = sg; x.fillRect(0, 0, W, H);
+  /* AO at ends */
+  var ao = x.createLinearGradient(xE, 0, xE + 70, 0);
+  ao.addColorStop(0, 'rgba(0,0,0,.38)'); ao.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = ao; x.fillRect(0, 0, xE + 80, H);
+  ao = x.createLinearGradient(xW, 0, xW - 60, 0);
+  ao.addColorStop(0, 'rgba(0,0,0,.32)'); ao.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = ao; x.fillRect(xW - 70, 0, 90, H);
+  /* longitudinal panel seams */
+  rGroove(x, xE + 18, cy - 16, xW - 18, cy - 12, 1.5);
+  rGroove(x, xE + 18, cy + 18, xW - 18, cy + 14, 1.4);
+  /* circumferential rings */
+  [xE + 36, xE + 48, 210, xW - 52, xW - 38].forEach(function (rx, i) {
+    var rw = i === 2 ? 7 : 5;
+    var rg = x.createLinearGradient(rx - rw, 0, rx + rw, 0);
+    rg.addColorStop(0, 'rgba(0,0,0,0)'); rg.addColorStop(0.35, 'rgba(0,0,0,.4)');
+    rg.addColorStop(0.5, 'rgba(255,255,255,.18)'); rg.addColorStop(0.7, 'rgba(0,0,0,.35)'); rg.addColorStop(1, 'rgba(0,0,0,0)');
+    x.fillStyle = rg; x.fillRect(rx - rw, 8, rw * 2, H - 16);
+  });
+  /* access panel */
+  x.fillStyle = 'rgba(0,0,0,.2)'; roundRect(x, 168, cy - 22, 92, 28, 4); x.fill();
+  x.fillStyle = rMetalFill(x, 168, cy - 22, 168, cy + 8, { hi: '#d8dee6', mid: '#8a93a2', lo: '#3a424c' });
+  roundRect(x, 170, cy - 20, 88, 24, 3); x.fill();
+  x.strokeStyle = 'rgba(0,0,0,.45)'; x.lineWidth = 1; roundRect(x, 170, cy - 20, 88, 24, 3); x.stroke();
+  rScrew(x, 178, cy - 12, 3.2); rScrew(x, 250, cy - 12, 3.2); rScrew(x, 178, cy + 4, 3.2); rScrew(x, 250, cy + 4, 3.2);
+  x.fillStyle = 'rgba(20,24,28,.72)'; x.font = '600 8px ui-monospace,Menlo,monospace'; x.textAlign = 'center';
+  x.fillText('R-12', 214, cy - 2);
+  /* vent slots */
+  for (var vi = 0; vi < 7; vi++) {
+    x.fillStyle = 'rgba(8,10,14,.7)';
+    roundRect(x, 86 + vi * 10, cy - 31, 5, 11, 1.2); x.fill();
+    x.fillStyle = 'rgba(255,255,255,.12)'; roundRect(x, 86 + vi * 10, cy - 31, 5, 3, 1); x.fill();
+  }
+  /* sensor port near elbow */
+  var pg = x.createRadialGradient(58, cy, 2, 58, cy, 11);
+  pg.addColorStop(0, '#11141a'); pg.addColorStop(0.6, '#3a424c'); pg.addColorStop(1, '#c5ced8');
+  x.fillStyle = pg; x.beginPath(); x.arc(58, cy, 11, 0, 7); x.fill();
+  x.strokeStyle = '#c9a227'; x.lineWidth = 1.4; x.beginPath(); x.arc(58, cy, 8.5, 0, 7); x.stroke();
+  x.fillStyle = '#0b0d11'; x.beginPath(); x.arc(58, cy, 5, 0, 7); x.fill();
+  /* rivets along rings and seams */
+  [xE + 36, xE + 48, xW - 52, xW - 38].forEach(function (rx) {
+    rRivet(x, rx, cy - 28, 3.1); rRivet(x, rx, cy + 28, 3.1);
+  });
+  for (var ri = 0; ri < 6; ri++) { rRivet(x, 100 + ri * 42, cy - 16, 2.3); rRivet(x, 110 + ri * 42, cy + 17, 2.3); }
+  /* warning chevron strip */
+  x.fillStyle = 'rgba(201,162,39,.35)';
+  for (var ci = 0; ci < 4; ci++) { x.beginPath(); x.moveTo(300 + ci * 10, cy + 22); x.lineTo(306 + ci * 10, cy + 22); x.lineTo(312 + ci * 10, cy + 32); x.lineTo(306 + ci * 10, cy + 32); x.closePath(); x.fill(); }
+  x.restore();
+  /* outer rim highlight */
+  rBodyPath(x, xE, 0, xW, H, rE, rW);
+  x.strokeStyle = 'rgba(255,255,255,.28)'; x.lineWidth = 1.2; x.stroke();
+  P.forearm = fa;
+
+  /* upper arm, similar but thicker and shorter */
+  var ua = rMake(300, 128); x = ua.x; W = 300; H = 128; cy = H / 2; xE = 24; xW = 276; rE = 48; rW = 42;
+  x.save();
+  rBodyPath(x, xE, 0, xW, H, rE, rW);
+  x.fillStyle = rMetalFill(x, 0, cy - rE, 0, cy + rE, { hi: '#dfe6ee', mid: '#7e8794', lo: '#323942' });
+  x.fill(); x.strokeStyle = 'rgba(10,12,16,.7)'; x.lineWidth = 1.6; x.stroke(); x.clip();
+  sg = x.createLinearGradient(0, cy - rE, 0, cy + rE);
+  sg.addColorStop(0.22, 'rgba(255,255,255,.5)'); sg.addColorStop(0.4, 'rgba(255,255,255,0)');
+  x.fillStyle = sg; x.fillRect(0, 0, W, H);
+  rGroove(x, xE + 16, cy - 14, xW - 16, cy - 12, 1.5);
+  rGroove(x, xE + 16, cy + 16, xW - 16, cy + 14, 1.4);
+  [xE + 32, 150, xW - 34].forEach(function (rx) {
+    var rg = x.createLinearGradient(rx - 5, 0, rx + 5, 0);
+    rg.addColorStop(0, 'rgba(0,0,0,0)'); rg.addColorStop(0.5, 'rgba(0,0,0,.38)'); rg.addColorStop(1, 'rgba(0,0,0,0)');
+    x.fillStyle = rg; x.fillRect(rx - 6, 6, 12, H - 12);
+    rRivet(x, rx, cy - 26, 3.2); rRivet(x, rx, cy + 26, 3.2);
+  });
+  /* heat vents */
+  for (var ui = 0; ui < 5; ui++) { x.fillStyle = 'rgba(8,10,14,.65)'; roundRect(x, 70 + ui * 14, cy - 28, 7, 14, 1.5); x.fill(); }
+  x.restore();
+  rBodyPath(x, xE, 0, xW, H, rE, rW);
+  x.strokeStyle = 'rgba(255,255,255,.25)'; x.lineWidth = 1.2; x.stroke();
+  P.upper = ua;
+
+  /* palm: wrist at top, knuckles at bottom, thumb saddle on the left */
+  var pal = rMake(200, 200); x = pal.x;
+  x.save();
+  x.translate(100, 100);
+  x.beginPath();
+  /* back-of-hand plate, slightly trapezoid */
+  x.moveTo(-36, -58); x.lineTo(38, -58); x.quadraticCurveTo(62, -50, 66, -20);
+  x.lineTo(70, 36); x.quadraticCurveTo(68, 58, 46, 66);
+  x.lineTo(-28, 68); x.quadraticCurveTo(-58, 58, -62, 28);
+  x.lineTo(-60, -22); x.quadraticCurveTo(-56, -54, -36, -58);
+  x.closePath();
+  x.fillStyle = rMetalFill(x, 0, -60, 0, 70);
+  x.fill(); x.strokeStyle = 'rgba(10,12,16,.75)'; x.lineWidth = 1.8; x.stroke();
+  x.clip();
+  sg = x.createLinearGradient(0, -60, 0, 70);
+  sg.addColorStop(0.15, 'rgba(255,255,255,.45)'); sg.addColorStop(0.35, 'rgba(255,255,255,0)');
+  x.fillStyle = sg; x.fillRect(-80, -80, 160, 180);
+  /* plate seams */
+  rGroove(x, -20, -50, -16, 58, 1.3);
+  rGroove(x, 16, -50, 18, 56, 1.3);
+  rGroove(x, -50, -8, 56, -4, 1.2);
+  rGroove(x, -54, 28, 58, 32, 1.2);
+  /* central hatch */
+  x.fillStyle = 'rgba(0,0,0,.22)'; roundRect(x, -22, -6, 44, 34, 4); x.fill();
+  x.fillStyle = rMetalFill(x, 0, -6, 0, 28, { hi: '#dce3eb', mid: '#8b94a2', lo: '#3a424c' });
+  roundRect(x, -20, -4, 40, 30, 3); x.fill();
+  x.strokeStyle = 'rgba(0,0,0,.4)'; x.lineWidth = 1; roundRect(x, -20, -4, 40, 30, 3); x.stroke();
+  rScrew(x, -12, 2, 3); rScrew(x, 12, 2, 3); rScrew(x, -12, 18, 3); rScrew(x, 12, 18, 3);
+  /* status LED window */
+  var led = x.createRadialGradient(0, -32, 0, 0, -32, 9);
+  led.addColorStop(0, '#b8fff4'); led.addColorStop(0.45, '#2ee0c5'); led.addColorStop(1, 'rgba(10,40,36,0)');
+  x.fillStyle = led; x.beginPath(); x.arc(0, -32, 9, 0, 7); x.fill();
+  x.fillStyle = '#7ff8e6'; x.beginPath(); x.arc(0, -32, 3.2, 0, 7); x.fill();
+  x.strokeStyle = 'rgba(20,24,28,.7)'; x.lineWidth = 1.2; x.beginPath(); x.arc(0, -32, 6.5, 0, 7); x.stroke();
+  /* knuckle housings */
+  [[-36, 58, 13], [-10, 62, 14], [16, 61, 13.5], [40, 56, 11.5]].forEach(function (k) {
+    var kg = x.createRadialGradient(k[0] - 3, k[1] - 4, 2, k[0], k[1], k[2]);
+    kg.addColorStop(0, '#e8eef6'); kg.addColorStop(0.45, '#8e99a8'); kg.addColorStop(1, '#2a313a');
+    x.fillStyle = kg; x.beginPath(); x.ellipse(k[0], k[1], k[2], k[2] * 0.78, 0, 0, 7); x.fill();
+    x.strokeStyle = 'rgba(0,0,0,.5)'; x.lineWidth = 1; x.stroke();
+    rRivet(x, k[0], k[1], 2.4);
+    x.strokeStyle = 'rgba(201,162,39,.7)'; x.lineWidth = 1.1; x.beginPath(); x.ellipse(k[0], k[1], k[2] * 0.72, k[2] * 0.55, 0, 0, 7); x.stroke();
+  });
+  /* thumb saddle on the left */
+  x.fillStyle = rMetalFill(x, -70, 0, -30, 20);
+  x.beginPath(); x.ellipse(-64, 8, 22, 18, -0.4, 0, 7); x.fill();
+  x.strokeStyle = 'rgba(0,0,0,.5)'; x.lineWidth = 1.2; x.stroke();
+  rRivet(x, -64, 6, 3);
+  /* perimeter rivets */
+  [[-30, -48], [30, -48], [-54, -16], [54, -16], [-56, 20], [58, 22]].forEach(function (q) { rRivet(x, q[0], q[1], 2.6); });
+  x.restore();
+  P.palm = pal;
+
+  /* phalanx: base at left, tip at right */
+  var ph = rMake(140, 64); x = ph.x;
+  x.save();
+  rBodyPath(x, 16, 0, 124, 64, 22, 15);
+  x.fillStyle = rMetalFill(x, 0, 10, 0, 54, { hi: '#eef3f8', mid: '#96a0ae', lo: '#3a424c' });
+  x.fill(); x.strokeStyle = 'rgba(10,12,16,.7)'; x.lineWidth = 1.3; x.stroke(); x.clip();
+  sg = x.createLinearGradient(0, 8, 0, 56);
+  sg.addColorStop(0.25, 'rgba(255,255,255,.5)'); sg.addColorStop(0.45, 'rgba(255,255,255,0)');
+  x.fillStyle = sg; x.fillRect(0, 0, 140, 64);
+  rGroove(x, 24, 32, 116, 32, 1.1);
+  var rg = x.createLinearGradient(100, 0, 112, 0);
+  rg.addColorStop(0, 'rgba(0,0,0,0)'); rg.addColorStop(0.5, 'rgba(0,0,0,.35)'); rg.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = rg; x.fillRect(96, 8, 20, 48);
+  rRivet(x, 36, 22, 2.2); rRivet(x, 36, 42, 2.2); rRivet(x, 104, 24, 2); rRivet(x, 104, 40, 2);
+  x.restore();
+  P.bone = ph;
+
+  /* joint cap */
+  var jn = rMake(56, 56); x = jn.x;
+  var jg = x.createRadialGradient(22, 20, 3, 28, 28, 24);
+  jg.addColorStop(0, '#f0f4f8'); jg.addColorStop(0.35, '#9aa3b2'); jg.addColorStop(0.75, '#4a5260'); jg.addColorStop(1, '#1a1e24');
+  x.fillStyle = jg; x.beginPath(); x.arc(28, 28, 23, 0, 7); x.fill();
+  x.strokeStyle = 'rgba(0,0,0,.55)'; x.lineWidth = 1.3; x.stroke();
+  x.strokeStyle = '#c9a227'; x.lineWidth = 2; x.beginPath(); x.arc(28, 28, 16, 0.2, 3.4); x.stroke();
+  x.strokeStyle = 'rgba(255,230,160,.45)'; x.lineWidth = 1; x.beginPath(); x.arc(28, 28, 16, -0.4, 1.2); x.stroke();
+  rRivet(x, 28, 28, 5.2);
+  x.strokeStyle = 'rgba(20,24,28,.65)'; x.lineWidth = 1.6; x.beginPath(); x.moveTo(20, 28); x.lineTo(36, 28); x.stroke();
+  P.joint = jn;
+
+  /* fingertip with rubber pad */
+  var tp = rMake(70, 52); x = tp.x;
+  x.save();
+  x.beginPath(); x.moveTo(10, 12); x.lineTo(38, 10); x.quadraticCurveTo(64, 16, 62, 26); x.quadraticCurveTo(64, 38, 36, 42); x.lineTo(10, 40); x.quadraticCurveTo(4, 26, 10, 12);
+  x.closePath();
+  x.fillStyle = rMetalFill(x, 0, 8, 0, 44, { hi: '#e8eef6', mid: '#8e99a8', lo: '#2f3640' });
+  x.fill(); x.strokeStyle = 'rgba(10,12,16,.7)'; x.lineWidth = 1.2; x.stroke(); x.clip();
+  x.fillStyle = '#2a2420';
+  x.beginPath(); x.ellipse(48, 26, 14, 11, 0.15, 0, 7); x.fill();
+  x.fillStyle = 'rgba(80,70,60,.55)';
+  x.beginPath(); x.ellipse(46, 24, 8, 6, 0.15, 0, 7); x.fill();
+  rGroove(x, 14, 26, 36, 26, 1);
+  x.restore();
+  P.tip = tp;
+
+  /* piston cylinder (horizontal, cap at left) */
+  var cy_ = rMake(120, 40); x = cy_.x;
+  x.save();
+  rBodyPath(x, 16, 0, 104, 40, 14, 12);
+  x.fillStyle = rMetalFill(x, 0, 6, 0, 34, { hi: '#c5ccd6', mid: '#5c6572', lo: '#242a32' });
+  x.fill(); x.strokeStyle = 'rgba(0,0,0,.6)'; x.lineWidth = 1.1; x.stroke(); x.clip();
+  for (var pi = 0; pi < 5; pi++) {
+    x.fillStyle = pi % 2 ? 'rgba(0,0,0,.28)' : 'rgba(255,255,255,.08)';
+    x.fillRect(28 + pi * 14, 7, 8, 26);
+  }
+  rRivet(x, 22, 20, 2.4);
+  x.restore();
+  P.cyl = cy_;
+
+  /* piston rod */
+  var rd = rMake(160, 18); x = rd.x;
+  var rdg = x.createLinearGradient(0, 0, 0, 18);
+  rdg.addColorStop(0, '#f4f7fb'); rdg.addColorStop(0.35, '#c5ced8'); rdg.addColorStop(0.7, '#7a8492'); rdg.addColorStop(1, '#3a424c');
+  x.fillStyle = rdg; roundRect(x, 2, 5, 156, 8, 3); x.fill();
+  x.strokeStyle = 'rgba(0,0,0,.4)'; x.lineWidth = 0.8; roundRect(x, 2, 5, 156, 8, 3); x.stroke();
+  x.fillStyle = 'rgba(255,255,255,.55)'; x.fillRect(6, 6.2, 148, 1.4);
+  P.rod = rd;
+
+  /* elbow housing */
+  var el = rMake(90, 90); x = el.x;
+  var eg = x.createRadialGradient(36, 32, 6, 45, 45, 40);
+  eg.addColorStop(0, '#eef3f8'); eg.addColorStop(0.4, '#8e99a8'); eg.addColorStop(0.8, '#3a424c'); eg.addColorStop(1, '#161a20');
+  x.fillStyle = eg; x.beginPath(); x.arc(45, 45, 38, 0, 7); x.fill();
+  x.strokeStyle = 'rgba(0,0,0,.6)'; x.lineWidth = 2; x.stroke();
+  x.strokeStyle = '#c9a227'; x.lineWidth = 2.4; x.beginPath(); x.arc(45, 45, 28, 0, 7); x.stroke();
+  x.strokeStyle = 'rgba(255,255,255,.25)'; x.lineWidth = 1.2; x.beginPath(); x.arc(45, 45, 22, -0.8, 1.4); x.stroke();
+  rRivet(x, 45, 45, 8);
+  [0, 1, 2, 3, 4, 5].forEach(function (i) {
+    var a = i * Math.PI / 3;
+    rRivet(x, 45 + Math.cos(a) * 28, 45 + Math.sin(a) * 28, 3);
+  });
+  P.elbow = el;
+
+  /* wrist ring */
+  var wr = rMake(80, 80); x = wr.x;
+  x.strokeStyle = 'rgba(0,0,0,.15)'; x.lineWidth = 14; x.beginPath(); x.arc(40, 40, 26, 0, 7); x.stroke();
+  var wg = x.createLinearGradient(10, 10, 70, 70);
+  wg.addColorStop(0, '#e8eef6'); wg.addColorStop(0.4, '#8e99a8'); wg.addColorStop(1, '#2a313a');
+  x.strokeStyle = wg; x.lineWidth = 11; x.beginPath(); x.arc(40, 40, 26, 0, 7); x.stroke();
+  x.strokeStyle = '#c9a227'; x.lineWidth = 2; x.beginPath(); x.arc(40, 40, 20, 0, 7); x.stroke();
+  x.strokeStyle = 'rgba(255,255,255,.35)'; x.lineWidth = 1.5; x.beginPath(); x.arc(40, 40, 30, -1, 0.6); x.stroke();
+  [0, 1, 2, 3].forEach(function (i) {
+    var a = i * Math.PI / 2 + 0.4;
+    rRivet(x, 40 + Math.cos(a) * 26, 40 + Math.sin(a) * 26, 3.1);
+  });
+  P.wrist = wr;
+
+  Rparts = P; return P;
+}
+function roundRect(x, a, b, w, h, r) {
+  var rr = Math.min(r, w / 2, h / 2);
+  x.beginPath(); x.moveTo(a + rr, b); x.arcTo(a + w, b, a + w, b + h, rr); x.arcTo(a + w, b + h, a, b + h, rr);
+  x.arcTo(a, b + h, a, b, rr); x.arcTo(a, b, a + w, b, rr); x.closePath();
+}
+function rIk(sx, sy, wx, wy, l1, l2, side) {
+  var dx = wx - sx, dy = wy - sy, d = Math.hypot(dx, dy) || 1;
+  var max = l1 + l2 - 1, min = Math.abs(l1 - l2) + 1;
+  if (d > max) { wx = sx + dx / d * max; wy = sy + dy / d * max; dx = wx - sx; dy = wy - sy; d = max; }
+  if (d < min) { wx = sx + dx / d * min; wy = sy + dy / d * min; dx = wx - sx; dy = wy - sy; d = min; }
+  var cosA = clamp01(((l1 * l1 + d * d - l2 * l2) / (2 * l1 * d) + 1) / 2) * 2 - 1;
+  if (cosA > 1) cosA = 1; if (cosA < -1) cosA = -1;
+  var a0 = Math.atan2(dy, dx) + side * Math.acos(cosA);
+  return { sx: sx, sy: sy, ex: sx + Math.cos(a0) * l1, ey: sy + Math.sin(a0) * l1, wx: wx, wy: wy };
+}
+function robotFromTop() { return (cfg.human === E.WHITE) !== flipped; }
+function startRobot(info) {
+  endRobot(false);
+  if (!sqEls[info.from] || !sqEls[info.to]) { finishPlay(info.m, info.from, info.to, info.capSq, info.capPc, info.atkPc, info.castle, info.us, true, info.noBattle, false); return; }
+  rBuildParts();
+  var layer = document.createElement('div'); layer.className = 'rfx'; layer.setAttribute('aria-hidden', 'true');
+  var back = document.createElement('canvas'), front = document.createElement('canvas');
+  var spr = document.createElement('div'); spr.className = 'rsprite'; spr.style.opacity = '0';
+  spr.innerHTML = pieceSvg(info.atkPc);
+  layer.appendChild(back); layer.appendChild(spr); layer.appendChild(front);
+  document.body.appendChild(layer);
+  var fromTop = robotFromTop();
+  robot = { t0: performance.now(), t: 0, fromTop: fromTop, holding: false, committed: false, pinch: 0,
+    from: info.from, to: info.to, info: info, layer: layer, back: back, front: front, spr: spr, dpr: 0 };
+  render();
+  robot.raf = requestAnimationFrame(robotTick);
+}
+function endRobot(commit) {
+  if (commit && robot && !robot.committed) commitRobot();
+  var r = robot; robot = null;
+  if (r) {
+    cancelAnimationFrame(r.raf);
+    if (r.layer && r.layer.parentNode) r.layer.parentNode.removeChild(r.layer);
+    var el = sqEls[r.from] && sqEls[r.from].querySelector('.pc'); if (el) el.classList.remove('rhold');
+    el = sqEls[r.to] && sqEls[r.to].querySelector('.pc'); if (el) el.classList.remove('rhold');
+    renderOverlay(); renderButtons(); renderStatus();
+  }
+}
+function skipRobot() { if (!robot) return; if (!robot.committed) commitRobot(); endRobot(false); }
+function commitRobot() {
+  var r = robot; if (!r || r.committed) return;
+  r.committed = true; r.holding = false;
+  var i = r.info;
+  finishPlay(i.m, i.from, i.to, i.capSq, i.capPc, i.atkPc, i.castle, i.us, true, i.noBattle, true);
+  if (r.spr) r.spr.style.opacity = '0';
+  var el = sqEls[r.to] && sqEls[r.to].querySelector('.pc'); if (el) el.classList.remove('rhold');
+}
+function rSizeCanvases(r) {
+  var dpr = Math.min(2.5, window.devicePixelRatio || 1), w = innerWidth, h = innerHeight;
+  if (r.dpr === dpr && r.cw === w && r.ch === h) return;
+  r.dpr = dpr; r.cw = w; r.ch = h;
+  [r.back, r.front].forEach(function (c) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); c.style.width = w + 'px'; c.style.height = h + 'px'; });
+}
+function rKey(t) {
+  /* timed waypoints, values in 0-1 of the motion language */
+  var T = {
+    reach: 480, down: 700, pinch: 920, lift: 1120, carry: 1520, lower: 1680, place: R_PLACE, open: 1860, end: R_DUR
+  };
+  var pinch = 0.1, hold = false, h = 0.85, kSrc = 1, kDst = 0, off = 1, retract = 0;
+  if (t < T.reach) { off = 1 - easeOut(t / T.reach); h = 0.85; }
+  else if (t < T.down) { off = 0; h = lerp(0.85, 0.08, easeInOut(seg(t, T.reach, T.down))); }
+  else if (t < T.pinch) { off = 0; h = 0.08; pinch = lerp(0.1, 1, easeOut(seg(t, T.down, T.pinch))); hold = pinch > 0.68; }
+  else if (t < T.lift) { off = 0; h = lerp(0.08, 0.7, easeOut(seg(t, T.pinch, T.lift))); pinch = 1; hold = true; }
+  else if (t < T.carry) { off = 0; h = 0.7; pinch = 1; hold = true; kSrc = 1 - easeInOut(seg(t, T.lift, T.carry)); kDst = 1 - kSrc; }
+  else if (t < T.lower) { off = 0; h = lerp(0.7, 0.08, easeInOut(seg(t, T.carry, T.lower))); pinch = 1; hold = true; kSrc = 0; kDst = 1; }
+  else if (t < T.open) {
+    off = 0; h = 0.08; kSrc = 0; kDst = 1;
+    pinch = t < T.place + 20 ? 1 : lerp(1, 0.12, easeIn(seg(t, T.place, T.open)));
+    hold = pinch > 0.55;
+  } else {
+    kSrc = 0; kDst = 1; pinch = 0.12; hold = false; h = 0.5;
+    retract = easeIn(seg(t, T.open, T.end)); off = retract;
+  }
+  return { pinch: pinch, hold: hold, h: h, kSrc: kSrc, kDst: kDst, off: off, retract: retract };
+}
+function robotTick(now) {
+  var r = robot; if (!r) return;
+  var t = robotFreeze != null ? robotFreeze : now - r.t0;
+  r.t = t;
+  if (t >= R_PLACE && !r.committed && robotFreeze == null) commitRobot();
+  rSizeCanvases(r);
+  var P = rBuildParts();
+  var s = sqCenter(r.from).s, S = sqCenter(r.from), D = sqCenter(r.to), board = boardEl.getBoundingClientRect();
+  var fromTop = r.fromTop, side = fromTop ? -1 : 1;
+  var ph = rKey(t);
+  r.pinch = ph.pinch;
+  var wasHold = r.holding;
+  r.holding = ph.hold && !r.committed;
+  if (r.holding !== wasHold) render();
+  /* grip in board plane */
+  var gx = lerp(S.x, D.x, ph.kDst), gy = lerp(S.y, D.y, ph.kDst);
+  if (ph.kDst > 0 && ph.kDst < 1) {
+    var midLift = Math.sin(Math.PI * ph.kDst) * s * 0.22;
+    gx += (D.x - S.x) * 0; gy -= midLift;
+  }
+  gy -= s * 0.36 * ph.h;          /* screen-up lift */
+  /* off-screen slide along the computer's edge */
+  var offY = (fromTop ? board.top - s * 2.8 : board.bottom + s * 2.8);
+  gy = lerp(gy, offY, ph.off);
+  gx = lerp(gx, lerp(S.x, D.x, 0.15) + side * s * 0.4, ph.off * 0.35);
+  var height = ph.h;
+  /* shoulder */
+  var midX = (board.left + board.right) / 2;
+  var reach = Math.abs((fromTop ? board.top : board.bottom) - gy);
+  var lean = clamp01((reach - 2.8 * s) / (5.2 * s));
+  var shX = midX + (gx - midX) * 0.38 + (-side) * s * 0.9;
+  var shY = fromTop ? board.top - s * 1.05 + lean * s * 1.55 : board.bottom + s * 1.05 - lean * s * 1.55;
+  if (ph.off > 0.15) { shY = lerp(shY, fromTop ? board.top - s * 1.8 : board.bottom + s * 1.8, ph.off); }
+  var l1 = 2.45 * s, l2 = 2.85 * s;
+  /* hand heading: toward the piece, mostly from the computer's edge, plus a slight wrist tilt */
+  var head = fromTop ? Math.PI / 2 : -Math.PI / 2;
+  head += side * 0.12;
+  var fingerReach = s * (0.78 - 0.26 * ph.pinch);
+  var palmLen = s * 0.46;
+  var dirx = Math.cos(head), diry = Math.sin(head);
+  var wx = gx - dirx * (palmLen + fingerReach), wy = gy - diry * (palmLen + fingerReach);
+  var ik = rIk(shX, shY, wx, wy, l1, l2, side);
+  var fAng = Math.atan2(ik.wy - ik.ey, ik.wx - ik.ex);
+  var hAng = lerp(fAng, head, 0.7);
+  /* draw */
+  var dpr = r.dpr, cb = r.back.getContext('2d'), cf = r.front.getContext('2d');
+  cb.setTransform(dpr, 0, 0, dpr, 0, 0); cb.clearRect(0, 0, r.cw, r.ch);
+  cf.setTransform(dpr, 0, 0, dpr, 0, 0); cf.clearRect(0, 0, r.cw, r.ch);
+  robotDraw(cb, cf, P, ik, hAng, fAng, ph, s, gx, gy, height, r);
+  /* held piece */
+  if (ph.hold && r.spr) {
+    var ps = s * (1 + 0.1 * height);
+    r.spr.style.width = r.spr.style.height = ps + 'px';
+    r.spr.style.opacity = '1';
+    r.spr.style.transform = 'translate3d(' + (gx - ps / 2) + 'px,' + (gy - ps / 2 + s * 0.06) + 'px,0) rotate(' + (side * 4 * height) + 'deg)';
+    if (r.committed && r.info.landPc !== r.info.atkPc && !r.promoted) {
+      r.promoted = true; r.spr.innerHTML = pieceSvg(r.info.landPc);
+    }
+  } else if (r.spr) r.spr.style.opacity = '0';
+  if (t >= R_DUR && robotFreeze == null) { endRobot(false); return; }
+  r.raf = requestAnimationFrame(robotTick);
+}
+function robotDraw(cb, cf, P, ik, hAng, fAng, ph, s, gx, gy, height, r) {
+  var sc = s / 52, thick = sc; /* cache designed around ~52px square visual weight */
+  /* shadow on the board */
+  var shAlpha = 0.28 + 0.2 * (1 - height), shS = s * (0.7 + 0.55 * height);
+  var sq = ph.kDst < 0.5 ? sqCenter(r.from) : sqCenter(r.to);
+  var sx = lerp(gx, sq.x, 0.35), sy = lerp(gy + s * 0.55, sq.y + s * 0.18, 0.4);
+  cb.save();
+  cb.fillStyle = 'rgba(10,8,6,' + shAlpha + ')';
+  cb.beginPath(); cb.ellipse(sx, sy + s * 0.22, shS * 0.72, shS * 0.28, 0, 0, 7); cb.fill();
+  cb.fillStyle = 'rgba(10,8,6,' + (shAlpha * 0.45) + ')';
+  cb.beginPath(); cb.ellipse(gx, gy + s * (0.35 + 0.2 * height), s * (0.45 + 0.2 * height), s * 0.16, hAng, 0, 7); cb.fill();
+  cb.restore();
+
+  var elbowAng = fAng, upperAng = Math.atan2(ik.ey - ik.sy, ik.ex - ik.sx);
+  var uLen = Math.hypot(ik.ex - ik.sx, ik.ey - ik.sy), fLen = Math.hypot(ik.wx - ik.ex, ik.wy - ik.ey);
+  /* scale parts to bone length */
+  var uSx = uLen / (P.upper.w * 0.84), uSy = (s * 0.56) / P.upper.h;
+  var fSx = fLen / (P.forearm.w * 0.88), fSy = (s * 0.5) / P.forearm.h;
+  var midU = { x: (ik.sx + ik.ex) / 2, y: (ik.sy + ik.ey) / 2 };
+  var midF = { x: (ik.ex + ik.wx) / 2, y: (ik.ey + ik.wy) / 2 };
+
+  rBlit(cb, P.upper, midU.x, midU.y, upperAng, uSx, uSy);
+  rBlit(cb, P.forearm, midF.x, midF.y, fAng, fSx, fSy);
+  rBlit(cb, P.elbow, ik.ex, ik.ey, elbowAng, (s * 0.46) / P.elbow.w, (s * 0.46) / P.elbow.h);
+
+  /* hydraulic pistons along the forearm (top and bottom), extension follows elbow bend */
+  var bend = Math.abs(Math.atan2(Math.sin(elbowAng - upperAng), Math.cos(elbowAng - upperAng)));
+  var ext = 0.55 + 0.45 * clamp01((bend - 0.4) / 1.6);
+  drawPiston(cb, P, ik.ex, ik.ey, ik.wx, ik.wy, fAng, s, 1, ext);
+  drawPiston(cb, P, ik.ex, ik.ey, ik.wx, ik.wy, fAng, s, -1, ext * 0.92);
+  /* cable bundle */
+  drawCables(cb, ik.ex, ik.ey, ik.wx, ik.wy, fAng, s, bend);
+
+  /* wrist */
+  rBlit(cb, P.wrist, ik.wx, ik.wy, hAng, (s * 0.4) / P.wrist.w, (s * 0.4) / P.wrist.h);
+  /* palm: cache has wrist at top, knuckles at bottom; rotate so knuckles follow hAng */
+  var px = ik.wx + Math.cos(hAng) * s * 0.22, py = ik.wy + Math.sin(hAng) * s * 0.22;
+  rBlit(cb, P.palm, px, py, hAng - Math.PI / 2, (s * 0.92) / P.palm.w, (s * 0.92) / P.palm.h);
+
+  var tight = 0.22 * ph.pinch;
+  /* curled fingers (middle, ring, pinky) stay in a loose fist on the back canvas */
+  drawFinger(cb, P, px, py, hAng, s, 0.14 * s, 0.30 * s, 0.62 + tight, [0.34, 0.30, 0.24], 0.95, 1);
+  drawFinger(cb, P, px, py, hAng, s, 0.36 * s, 0.26 * s, 0.70 + tight * 0.9, [0.30, 0.26, 0.22], 0.88, 1);
+  drawFinger(cb, P, px, py, hAng, s, 0.54 * s, 0.20 * s, 0.80 + tight * 0.7, [0.24, 0.20, 0.18], 0.78, 1);
+
+  /* index + thumb: tips track the grip so they actually pinch the piece */
+  var sep = s * (0.28 - 0.16 * ph.pinch);
+  var iRoot = handPt(px, py, hAng, 0.08 * s, 0.32 * s);
+  var tRoot = handPt(px, py, hAng, -0.46 * s, 0.04 * s);
+  var iTip = { x: gx + sep, y: gy + s * 0.02 };
+  var tTip = { x: gx - sep, y: gy + s * 0.04 };
+  /* open pose: tips sit further apart and a little past the piece */
+  if (ph.pinch < 0.99) {
+    var open = 1 - ph.pinch;
+    iTip.x += Math.cos(hAng + 0.35) * s * 0.22 * open;
+    iTip.y += Math.sin(hAng + 0.35) * s * 0.22 * open;
+    tTip.x += Math.cos(hAng - 0.9) * s * 0.28 * open;
+    tTip.y += Math.sin(hAng - 0.9) * s * 0.28 * open;
+  }
+  drawChain(cf, P, iRoot, iTip, s, [0.36 * s, 0.30 * s, 0.24 * s], -1, 1);
+  drawChain(cf, P, tRoot, tTip, s, [0.32 * s, 0.24 * s], 1, 1.08);
+}
+function handPt(px, py, hAng, lx, ly) {
+  var c = Math.cos(hAng), si = Math.sin(hAng);
+  /* local +Y along the fingers, +X to the hand's right (pinky side) */
+  return { x: px + ly * c + lx * si, y: py + ly * si - lx * c };
+}
+function drawFinger(ctx, P, px, py, hAng, s, rootX, rootY, curl, lens, slx, sly, joints) {
+  var a = hAng, p = handPt(px, py, hAng, rootX, rootY);
+  var n = lens.length;
+  for (var i = 0; i < n; i++) {
+    var j = joints ? joints[i] : curl;
+    var bend = (i === 0 ? 0.55 : 0.85) * j * 1.15;
+    a += bend;
+    var len = lens[i] * s * (slx || 1);
+    var midX = p.x + Math.cos(a) * len / 2, midY = p.y + Math.sin(a) * len / 2;
+    var w = (s * (0.22 - i * 0.03)) * (sly || 1);
+    rBlit(ctx, P.joint, p.x, p.y, a, w * 1.15 / P.joint.w, w * 1.15 / P.joint.h);
+    rBlit(ctx, P.bone, midX, midY, a, len / (P.bone.w * 0.78), w / (P.bone.h * 0.55));
+    p = { x: p.x + Math.cos(a) * len, y: p.y + Math.sin(a) * len };
+  }
+  rBlit(ctx, P.tip, p.x + Math.cos(a) * s * 0.08, p.y + Math.sin(a) * s * 0.08, a, (s * 0.28 * (slx || 1)) / P.tip.w, (s * 0.2 * (sly || 1)) / P.tip.h);
+}
+function drawChain(ctx, P, root, tip, s, lens, bulge, wid) {
+  var dx = tip.x - root.x, dy = tip.y - root.y, dist = Math.hypot(dx, dy) || 1;
+  var tot = 0, i; for (i = 0; i < lens.length; i++) tot += lens[i];
+  var ang = Math.atan2(dy, dx), nx = -Math.sin(ang), ny = Math.cos(ang);
+  var half = tot * 0.5, bow = 0;
+  if (dist < tot) bow = Math.sqrt(Math.max(0, half * half - (dist * 0.5) * (dist * 0.5))) * (bulge || 1);
+  var cpx = (root.x + tip.x) / 2 + nx * bow, cpy = (root.y + tip.y) / 2 + ny * bow;
+  var pts = [root], acc = 0;
+  for (i = 0; i < lens.length; i++) {
+    acc += lens[i] / tot;
+    var tt = acc, mt = 1 - tt;
+    pts.push({ x: mt * mt * root.x + 2 * mt * tt * cpx + tt * tt * tip.x, y: mt * mt * root.y + 2 * mt * tt * cpy + tt * tt * tip.y });
+  }
+  pts[pts.length - 1] = tip;
+  for (i = 0; i < lens.length; i++) {
+    var a = pts[i], b = pts[i + 1], aa = Math.atan2(b.y - a.y, b.x - a.x), len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    var w = s * (0.23 - i * 0.03) * (wid || 1);
+    rBlit(ctx, P.joint, a.x, a.y, aa, w * 1.15 / P.joint.w, w * 1.15 / P.joint.h);
+    rBlit(ctx, P.bone, (a.x + b.x) / 2, (a.y + b.y) / 2, aa, len / (P.bone.w * 0.78), w / (P.bone.h * 0.55));
+  }
+  var last = pts[pts.length - 1], prev = pts[pts.length - 2], la = Math.atan2(last.y - prev.y, last.x - prev.x);
+  rBlit(ctx, P.tip, last.x + Math.cos(la) * s * 0.02, last.y + Math.sin(la) * s * 0.02, la, (s * 0.28 * (wid || 1)) / P.tip.w, (s * 0.2 * (wid || 1)) / P.tip.h);
+}
+function drawPiston(ctx, P, ex, ey, wx, wy, fAng, s, side, ext) {
+  var nx = -Math.sin(fAng) * side, ny = Math.cos(fAng) * side;
+  var ox = nx * s * 0.28, oy = ny * s * 0.28;
+  var a = { x: ex + Math.cos(fAng) * s * 0.35 + ox, y: ey + Math.sin(fAng) * s * 0.35 + oy };
+  var b = { x: wx - Math.cos(fAng) * s * 0.2 + ox * 0.85, y: wy - Math.sin(fAng) * s * 0.2 + oy * 0.85 };
+  var ang = Math.atan2(b.y - a.y, b.x - a.x), len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  var cylL = len * 0.42, rodL = len * (0.3 + 0.35 * ext);
+  var cMid = { x: a.x + Math.cos(ang) * cylL / 2, y: a.y + Math.sin(ang) * cylL / 2 };
+  rBlit(ctx, P.cyl, cMid.x, cMid.y, ang, cylL / (P.cyl.w * 0.75), (s * 0.16) / P.cyl.h);
+  var rStart = { x: a.x + Math.cos(ang) * cylL * 0.85, y: a.y + Math.sin(ang) * cylL * 0.85 };
+  var rMid = { x: rStart.x + Math.cos(ang) * rodL / 2, y: rStart.y + Math.sin(ang) * rodL / 2 };
+  rBlit(ctx, P.rod, rMid.x, rMid.y, ang, rodL / (P.rod.w * 0.9), (s * 0.07) / P.rod.h);
+  /* clevis pins */
+  ctx.fillStyle = '#c9a227';
+  ctx.beginPath(); ctx.arc(a.x, a.y, s * 0.035, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(rStart.x + Math.cos(ang) * rodL, rStart.y + Math.sin(ang) * rodL, s * 0.03, 0, 7); ctx.fill();
+}
+function drawCables(ctx, ex, ey, wx, wy, fAng, s, bend) {
+  var nx = -Math.sin(fAng), ny = Math.cos(fAng);
+  var sag = s * (0.12 + 0.16 * (1 - clamp01(bend / 2)));
+  var cols = ['#2a1c14', '#1a222c', '#3a1808'];
+  for (var i = 0; i < 3; i++) {
+    var o = (i - 1) * s * 0.045 - s * 0.32;
+    var a = { x: ex + Math.cos(fAng) * s * 0.25 + nx * o, y: ey + Math.sin(fAng) * s * 0.25 + ny * o };
+    var b = { x: wx - Math.cos(fAng) * s * 0.15 + nx * (o * 0.8), y: wy - Math.sin(fAng) * s * 0.15 + ny * (o * 0.8) };
+    var mx = (a.x + b.x) / 2 + nx * (-sag), my = (a.y + b.y) / 2 + ny * (-sag);
+    ctx.strokeStyle = cols[i]; ctx.lineWidth = s * (0.035 - i * 0.004); ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(mx, my, b.x, b.y); ctx.stroke();
+    if (i === 1) { ctx.strokeStyle = 'rgba(46,224,197,.45)'; ctx.lineWidth = s * 0.012; ctx.stroke(); }
+  }
+  /* clamps */
+  ctx.fillStyle = '#c9a227';
+  ctx.beginPath(); ctx.arc(ex + Math.cos(fAng) * s * 0.25 - nx * s * 0.32, ey + Math.sin(fAng) * s * 0.25 - ny * s * 0.32, s * 0.04, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(wx - Math.cos(fAng) * s * 0.15 - nx * s * 0.26, wy - Math.sin(fAng) * s * 0.15 - ny * s * 0.26, s * 0.036, 0, 7); ctx.fill();
+}
+
+
 
 /* ---------- input: tap-to-move and drag-and-drop (pointer events: mouse + touch) ---------- */
 function sqFromPoint(x, y) {
@@ -1690,6 +2304,7 @@ boardEl.addEventListener('pointerdown', function (e) {
   if (e.button !== undefined && e.button !== 0) return;
   var el = e.target.closest('.sq'); if (!el) return;
   var sq = +el.dataset.sq;
+  if (robot) { e.preventDefault(); skipRobot(); return; }
   if (viewPly >= 0) { e.preventDefault(); setView(-1); return; }
   if (!humanCanMove()) return;
   e.preventDefault();
@@ -1865,7 +2480,7 @@ $('hintBtn').onclick = hint;
 $('drawBtn').onclick = offerDraw;
 $('resignBtn').onclick = resign;
 $('pgnBtn').onclick = copyPgn;
-$('flipBtn').onclick = function () { flipped = !flipped; buildBoard(); render(); save(); };
+$('flipBtn').onclick = function () { if (robot) skipRobot(); flipped = !flipped; buildBoard(); render(); save(); };
 $('soundBtn').onclick = function () { prefs.sound = !prefs.sound; savePrefs(); unlockAudio(); renderButtons(); if (prefs.sound) setTimeout(function () { sfx('move'); }, 60); };
 $('navFirst').onclick = function () { setView(0); };
 $('navPrev').onclick = function () { navStep(-1); };
@@ -1875,6 +2490,7 @@ $('navLast').onclick = function () { setView(-1); };
   $(id).onchange = function () { confirmNew('Changing this setting starts a new game. The game in progress will be lost.'); };
 });
 $('battles').onchange = function () { prefs.battle = $('battles').value === 'on'; if (!prefs.battle) endBattle(); savePrefs(); };
+$('robot').onchange = function () { prefs.robot = $('robot').value === 'on'; if (!prefs.robot && robot) skipRobot(); savePrefs(); };
 $('level').onchange = function () { cfg.level = $('level').value; renderButtons(); save(); };
 
 /* test/debug hook */
@@ -1883,15 +2499,18 @@ window.chessApp = {
   get thinking() { return thinking; }, get usingWorker() { return !!worker; }, get cfg() { return cfg; }, get rem() { return liveRem(); },
   get battle() { return battle && !battle.pending ? { type: battle.type, t: battle.t || 0 } : null; }, get battlesPlayed() { return battleCount; },
   get prefs() { return prefs; }, battleT: function (ms) { battleFreeze = ms; },
+  get robot() { return robot ? { t: robot.t || 0, holding: !!robot.holding, committed: !!robot.committed, fromTop: !!robot.fromTop, pinch: robot.pinch || 0 } : null; },
+  robotT: function (ms) { robotFreeze = ms; },
   get redoCount() { return redo.length; }, get viewPly() { return viewPly; }, get hint() { return hintMove ? E.moveToUci(hintMove) : null; },
   newGame: newGame, undo: undo, redo: redoMove,
   setClock: function (w, b) { settleClock(); rem = { w: w, b: b }; tickAt = Date.now(); renderClocks(); },
-  playUci: function (u) { var m = pos.uciToMove(u); if (m && legal.indexOf(m) >= 0) { cancelAI(); play(m, { noSlide: true }); return true; } return false; }
+  playUci: function (u, opt) { var m = pos.uciToMove(u); if (m && legal.indexOf(m) >= 0) { cancelAI(); play(m, opt || { noSlide: true }); return true; } return false; }
 };
 
 /* ---------- start ---------- */
-try { var pr = JSON.parse(localStorage.getItem(PREF_KEY) || 'null'); if (pr && typeof pr.sound === 'boolean') prefs.sound = pr.sound; if (pr && typeof pr.battle === 'boolean') prefs.battle = pr.battle; } catch (e) {}
+try { var pr = JSON.parse(localStorage.getItem(PREF_KEY) || 'null'); if (pr && typeof pr.sound === 'boolean') prefs.sound = pr.sound; if (pr && typeof pr.battle === 'boolean') prefs.battle = pr.battle; if (pr && typeof pr.robot === 'boolean') prefs.robot = pr.robot; } catch (e) {}
 $('battles').value = prefs.battle ? 'on' : 'off';
+$('robot').value = prefs.robot ? 'on' : 'off';
 $('settings').open = window.innerWidth > 760 && window.innerHeight > 540;
 if (loadSave()) {
   writeSelects(); buildBoard();
